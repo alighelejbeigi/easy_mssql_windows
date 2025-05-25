@@ -36,7 +36,7 @@ class MyHomePage extends StatefulWidget {
   }
 
   Future<void> test3() async {
-    final result = await test.query(table: 'ARTICLE', columns: ['A_Name']);
+    final result = await test.customQuery(table: 'ARTICLE', columns: ['A_Name']);
     resultValue = result[value]['A_Name'];
     value++;
   }
