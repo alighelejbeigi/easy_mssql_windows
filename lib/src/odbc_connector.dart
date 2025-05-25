@@ -1,669 +1,521 @@
 import 'dart:ffi';
-
 import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart'; // If kDebugMode is still used
 
-// ODBC result-column count
-typedef SQLNumResultColsNative = SQLRETURN Function(
-    SQLHANDLE stmtHandle,
-    Pointer<Int16> columnCountPtr,
-    );
-typedef SQLNumResultColsDart = int Function(
-    SQLHANDLE stmtHandle,
-    Pointer<Int16> columnCountPtr,
-    );
+// Use 'part' and 'part of' for tight coupling if these files are conceptually one library unit
+// Or use direct imports if they are more independent.
+part 'odbc_bindings.dart';
 
-// ODBC describe-col (wide)
-typedef SQLDescribeColWNative = SQLRETURN Function(
-    SQLHANDLE stmtHandle,
-    Uint16 columnNumber,
-    Pointer<Utf16> columnNamePtr,
-    Int16 nameBufferLength,
-    Pointer<Int16> nameLengthPtr,
-    Pointer<Int16> dataTypePtr,
-    Pointer<Int32> columnSizePtr,
-    Pointer<Int16> decimalDigitsPtr,
-    Pointer<Int16> nullablePtr,
-    );
-typedef SQLDescribeColWDart = int Function(
-    SQLHANDLE stmtHandle,
-    int columnNumber,
-    Pointer<Utf16> columnNamePtr,
-    int nameBufferLength,
-    Pointer<Int16> nameLengthPtr,
-    Pointer<Int16> dataTypePtr,
-    Pointer<Int32> columnSizePtr,
-    Pointer<Int16> decimalDigitsPtr,
-    Pointer<Int16> nullablePtr,
-    );
+part 'odbc_raw_api.dart';
 
+// If odbc_extensions.dart also uses 'part of', include it:
+// part 'odbc_extensions.dart';
 
-/// Native typedefs
-typedef SQLRETURN = Int16;
-typedef SQLHANDLE = Pointer<Void>;
-typedef SQLPOINTER = Pointer<Void>;
+// Or, if using separate files with imports:
+// import 'odbc_bindings.dart';
+// import 'odbc_raw_api.dart';
 
-// ODBC C data types
-const int SQL_C_SLONG = 4; // 32-bit signed integer
-const int SQL_C_DOUBLE = 8; // 64-bit floating point
-const int SQL_C_BIT = (-7); // BIT
-
-typedef SQLAllocHandleNative =
-    SQLRETURN Function(
-      Int16 handleType,
-      SQLHANDLE inputHandle,
-      Pointer<SQLHANDLE> outputHandle,
-    );
-typedef SQLAllocHandleDart =
-    int Function(
-      int handleType,
-      SQLHANDLE inputHandle,
-      Pointer<SQLHANDLE> outputHandle,
-    );
-
-typedef SQLSetEnvAttrNative =
-    SQLRETURN Function(
-      SQLHANDLE envHandle,
-      Int32 attribute,
-      SQLPOINTER valuePtr,
-      Int32 stringLength,
-    );
-typedef SQLSetEnvAttrDart =
-    int Function(
-      SQLHANDLE envHandle,
-      int attribute,
-      SQLPOINTER valuePtr,
-      int stringLength,
-    );
-
-typedef SQLDriverConnectWNative =
-    SQLRETURN Function(
-      SQLHANDLE dbc,
-      IntPtr hwnd,
-      Pointer<Utf16> inConnStr,
-      Int16 inConnStrLen,
-      Pointer<Utf16> outConnStr,
-      Int16 outConnStrMax,
-      Pointer<Int16> outConnStrLen,
-      Int16 completion,
-    );
-typedef SQLDriverConnectWDart =
-    int Function(
-      SQLHANDLE dbc,
-      int hwnd,
-      Pointer<Utf16> inConnStr,
-      int inConnStrLen,
-      Pointer<Utf16> outConnStr,
-      int outConnStrMax,
-      Pointer<Int16> outConnStrLen,
-      int completion,
-    );
-
-typedef SQLExecDirectWNative =
-    SQLRETURN Function(SQLHANDLE stmt, Pointer<Utf16> sqlStr, Int32 textLength);
-typedef SQLExecDirectWDart =
-    int Function(SQLHANDLE stmt, Pointer<Utf16> sqlStr, int textLength);
-
-typedef SQLFetchNative = SQLRETURN Function(SQLHANDLE stmt);
-typedef SQLFetchDart = int Function(SQLHANDLE stmt);
-
-typedef SQLGetDataNative =
-    SQLRETURN Function(
-      SQLHANDLE stmt,
-      Uint16 colNumber,
-      Uint16 targetType,
-      Pointer<Void> targetValue,
-      Int64 bufferLength,
-      Pointer<Int64> strLenOrIndPtr,
-    );
-typedef SQLGetDataDart =
-    int Function(
-      SQLHANDLE stmt,
-      int colNumber,
-      int targetType,
-      Pointer<Void> targetValue,
-      int bufferLength,
-      Pointer<Int64> strLenOrIndPtr,
-    );
-
-typedef SQLFreeHandleNative =
-    SQLRETURN Function(Int16 handleType, SQLHANDLE handle);
-typedef SQLFreeHandleDart = int Function(int handleType, SQLHANDLE handle);
-
-/// ODBC handle types
-const int SQL_HANDLE_ENV = 1;
-const int SQL_HANDLE_DBC = 2;
-const int SQL_HANDLE_STMT = 3;
-
-/// ODBC attributes
-const int SQL_ATTR_ODBC_VERSION = 200;
-const int SQL_OV_ODBC3 = 3;
-
-/// Driver completion options
-const int SQL_DRIVER_COMPLETE = 1;
-
-/// C data types for SQLGetData
-const int SQL_C_CHAR = 1; // ANSI char
-const int SQL_C_WCHAR = -8; // wide char (Unicode)
-
+/// Manages ODBC connections and operations.
 class OdbcConnector {
-  late final DynamicLibrary _odbc;
-  late final SQLAllocHandleDart _SQLAllocHandle;
-  late final SQLSetEnvAttrDart _SQLSetEnvAttr;
-  late final SQLDriverConnectWDart _SQLDriverConnectW;
-  late final SQLExecDirectWDart _SQLExecDirectW;
-  late final SQLFetchDart _SQLFetch;
-  late final SQLGetDataDart _SQLGetData;
-  late final SQLFreeHandleDart _SQLFreeHandle;
-  late final SQLNumResultColsDart _SQLNumResultCols;
-  late final SQLDescribeColWDart _SQLDescribeColW;
+  final _OdbcRawApi _api;
 
-  SQLHANDLE? _env;
-  SQLHANDLE? _dbc;
-  SQLHANDLE? _stmt;
+  // ODBC Handles
+  SQLHANDLE? _envHandle;
+  SQLHANDLE? _dbcHandle;
+  SQLHANDLE? _stmtHandle;
 
-  OdbcConnector() {
-    _odbc = DynamicLibrary.open('odbc32.dll');
-
-    _SQLAllocHandle = _odbc
-        .lookupFunction<SQLAllocHandleNative, SQLAllocHandleDart>(
-          'SQLAllocHandle',
-        );
-    _SQLSetEnvAttr = _odbc
-        .lookupFunction<SQLSetEnvAttrNative, SQLSetEnvAttrDart>(
-          'SQLSetEnvAttr',
-        );
-    _SQLDriverConnectW = _odbc
-        .lookupFunction<SQLDriverConnectWNative, SQLDriverConnectWDart>(
-          'SQLDriverConnectW',
-        );
-    _SQLExecDirectW = _odbc
-        .lookupFunction<SQLExecDirectWNative, SQLExecDirectWDart>(
-          'SQLExecDirectW',
-        );
-    _SQLFetch = _odbc.lookupFunction<SQLFetchNative, SQLFetchDart>('SQLFetch');
-    _SQLGetData = _odbc.lookupFunction<SQLGetDataNative, SQLGetDataDart>(
-      'SQLGetData',
-    );
-    _SQLFreeHandle = _odbc
-        .lookupFunction<SQLFreeHandleNative, SQLFreeHandleDart>(
-          'SQLFreeHandle',
-        );
-    _SQLNumResultCols = _odbc.lookupFunction<
-        SQLNumResultColsNative,
-        SQLNumResultColsDart>(
-      'SQLNumResultCols',
-    );
-
-    _SQLDescribeColW = _odbc.lookupFunction<
-        SQLDescribeColWNative,
-        SQLDescribeColWDart>(
-      'SQLDescribeColW',
-    );
-  }
-
-  /// ایجاد و مقداردهی اولیه محیط و اتصال
-  Future<String?> connect(String connectionString) async {
-    final envOut = calloc<SQLHANDLE>();
-    if (_SQLAllocHandle(SQL_HANDLE_ENV, nullptr, envOut) != 0) {
-      calloc.free(envOut);
-      throw Exception('❌ SQLAllocHandle ENV failed');
-    }
-    _env = envOut.value;
-    calloc.free(envOut);
-
-    if (_SQLSetEnvAttr(
-          _env!,
-          SQL_ATTR_ODBC_VERSION,
-          Pointer.fromAddress(SQL_OV_ODBC3),
-          0,
-        ) !=
-        0) {
-      throw Exception('❌ SQLSetEnvAttr failed');
-    }
-
-    final dbcOut = calloc<SQLHANDLE>();
-    if (_SQLAllocHandle(SQL_HANDLE_DBC, _env!, dbcOut) != 0) {
-      calloc.free(dbcOut);
-      throw Exception('❌ SQLAllocHandle DBC failed');
-    }
-    _dbc = dbcOut.value;
-    calloc.free(dbcOut);
-
-    // ===== داخل متد connect =====
-    final connPtr = connectionString.toNativeUtf16();
-
-    // الف) بافر خروجی
-    final outBuf = calloc<Uint16>(512);
-    final Pointer<Utf16> outStr = outBuf.cast<Utf16>();
-
-    // ب) طول رشته خروجی
-    final outLen = calloc<Int16>();
-
-    // ج) فراخوانی ODBC
-    final ret = _SQLDriverConnectW(
-      _dbc!,
-      0,
-      connPtr,
-      -3,
-      outStr,
-      512,
-      outLen,
-      SQL_DRIVER_COMPLETE,
-    );
-
-    calloc.free(connPtr); // بعد از استفاده از connPtr
-
-    if (ret != 0 && ret != 1) {
-      // قبل از پرتاب Exception، بافرها رو آزاد کن
-      calloc.free(outBuf);
-      calloc.free(outLen);
-      return ('❌ SQLDriverConnectW failed: return code $ret');
-    }
-
-    // د) حالا که کارتان با outStr تمام شد، بافرها را آزاد کنید
-    calloc.free(outBuf);
-    calloc.free(outLen);
-
-    // ادامه: تخصیص STMT و ...
-
-    if (ret != 0 && ret != 1 /* SQL_SUCCESS_WITH_INFO */ ) {
-      return ('❌ SQLDriverConnectW failed: return code $ret');
-    }
-
-    final stmtOut = calloc<SQLHANDLE>();
-    if (_SQLAllocHandle(SQL_HANDLE_STMT, _dbc!, stmtOut) != 0) {
-      calloc.free(stmtOut);
-
-      return ('❌ SQLAllocHandle STMT failed');
-
-    }
-    _stmt = stmtOut.value;
-    calloc.free(stmtOut);
-    return 'success';
-  }
-
-/*
-  Future<List<ProductNew>> queryGet(String sql) async {
-    // 1) ارسال کوئری
-    final sqlPtr = sql.toNativeUtf16();
-    final execRet = _SQLExecDirectW(_stmt!, sqlPtr, -3);
-    calloc.free(sqlPtr);
-    if (execRet != 0 && execRet != 1) {
-      throw Exception('ExecDirect failed: code $execRet');
-    }
-
-    final products = <ProductNew>[];
-
-    // خواندن رشته (WCHAR)
-    String readString(int col) {
-      final buf = calloc<Uint16>(512);
-      final lenPtr = calloc<Int64>();
-      final ret = _SQLGetData(
-        _stmt!,
-        col,
-        SQL_C_WCHAR,
-        buf.cast<Void>(),
-        sizeOf<Uint16>() * 512,
-        lenPtr,
-      );
-      if (ret != 0) {
-        calloc.free(buf);
-        calloc.free(lenPtr);
-        throw Exception('SQLGetData failed at col=$col, code $ret');
-      }
-      final s = buf.cast<Utf16>().toDartString().trim();
-      calloc.free(buf);
-      calloc.free(lenPtr);
-      return s;
-    }
-
-    // خواندن double باینری
-    double readDouble(int col) {
-      final buf = calloc<Double>();
-      final lenPtr = calloc<Int64>();
-      final ret = _SQLGetData(
-        _stmt!,
-        col,
-        SQL_C_DOUBLE,
-        buf.cast<Void>(),
-        sizeOf<Double>(),
-        lenPtr,
-      );
-      if (ret != 0) {
-        calloc.free(buf);
-        calloc.free(lenPtr);
-        throw Exception('SQLGetData(double) failed at col=$col, code $ret');
-      }
-      final v = buf.value;
-      calloc.free(buf);
-      calloc.free(lenPtr);
-      return v;
-    }
-
-    // خواندن int32 باینری
-    int readInt(int col) {
-      final buf = calloc<Int32>();
-      final lenPtr = calloc<Int64>();
-      final ret = _SQLGetData(
-        _stmt!,
-        col,
-        SQL_C_SLONG,
-        buf.cast<Void>(),
-        sizeOf<Int32>(),
-        lenPtr,
-      );
-      if (ret != 0) {
-        calloc.free(buf);
-        calloc.free(lenPtr);
-        throw Exception('SQLGetData(int) failed at col=$col, code $ret');
-      }
-      final v = buf.value;
-      calloc.free(buf);
-      calloc.free(lenPtr);
-      return v;
-    }
-
-    // خواندن BIT
-    bool readBool(int col) {
-      final buf = calloc<Uint8>();
-      final lenPtr = calloc<Int64>();
-      final ret = _SQLGetData(
-        _stmt!,
-        col,
-        SQL_C_BIT,
-        buf.cast<Void>(),
-        sizeOf<Uint8>(),
-        lenPtr,
-      );
-      if (ret != 0) {
-        calloc.free(buf);
-        calloc.free(lenPtr);
-        throw Exception('SQLGetData(bool) failed at col=$col, code $ret');
-      }
-      final v = buf.value;
-      calloc.free(buf);
-      calloc.free(lenPtr);
-      return v != 0;
-    }
-
-    // 2) پیمایش ردیف‌ها
-    while (true) {
-      final fetchRet = _SQLFetch(_stmt!);
-      if (fetchRet != 0) break;
-
-      products.add(
-        ProductNew(
-          aCode: readString(1),
-          aCodeC: readString(2),
-          aName: readString(3),
-          aCountry: readString(4),
-          attribute: readString(5),
-          picturePath: readString(6),
-          model: readString(7),
-          buyPrice: readDouble(8),
-          firstBuyPrice: readDouble(9),
-          endBuyPrice: readDouble(10),
-          sellPrice1: readDouble(11),
-          sellPrice2: readDouble(12),
-          sellPrice3: readDouble(13),
-          sellPrice4: readDouble(14),
-          sellPrice5: readDouble(15),
-          sellPrice6: readDouble(16),
-          sellPrice7: readDouble(17),
-          sellPrice8: readDouble(18),
-          sellPrice9: readDouble(19),
-          sellPrice10: readDouble(20),
-          darsadForush: readDouble(21),
-          toolArz: readDouble(22),
-          moddat: readDouble(23),
-          weight2: readDouble(24),
-          incField: readString(25),
-          exist: readInt(26),
-          exist2: readInt(27),
-          finishDate: readString(28),
-          place: readString(29),
-          aMin: readInt(30),
-          aMax: readInt(31),
-          firstExist: readDouble(32),
-          firstExist2: readDouble(33),
-          existMandeh: readInt(34),
-          buyDollar: readDouble(35),
-          sellDollar: readDouble(36),
-          deleted: readBool(37),
-          typeAnbarC: readString(38),
-          fewTakhfif: readDouble(39),
-          darsadTakhfif: readDouble(40),
-          vahedCode: readString(41),
-          hlpFieldL: readString(42),
-          karton: readInt(43),
-          basteh: readInt(44),
-          myBuyPrice: readDouble(45),
-          maxPrice: readDouble(46),
-          minPrice: readDouble(47),
-          darsadPorsant: readDouble(48),
-          weight: readDouble(49),
-          hajm: readDouble(50),
-          userPrice: readDouble(51),
-          other1: readString(52),
-          other2: readString(53),
-          other3: readString(54),
-          other4: readString(55),
-          other5: readString(56),
-          other6: readString(57),
-        ),
-      );
-    }
-
-    return products;
-  }
-*/
-
-  void disconnect() {
-    if (_stmt != null) {
-      _SQLFreeHandle(SQL_HANDLE_STMT, _stmt!);
-    }
-    if (_dbc != null) {
-      _SQLFreeHandle(SQL_HANDLE_DBC, _dbc!);
-    }
-    if (_env != null) {
-      _SQLFreeHandle(SQL_HANDLE_ENV, _env!);
-    }
-  }
-}
-
-extension EasyQuery on OdbcConnector {
-  /// اجراکنندهٔ داینامیک SELECT روی جدول محلی
+  /// Creates an OdbcConnector.
   ///
-  /// [table]     : نام جدول (بدون براکت)
-  /// [columns]   : لیست نام ستون‌ها (بدون براکت)
-  /// اگر خالی باشد، همهٔ ستون‌ها (*) خوانده می‌شوند.
-  Future<List<Map<String, dynamic>>> query(
-      String table, {
-        List<String>? columns,
-      }) async {
-    // 1. ساخت رشتهٔ SELECT
-    final colsPart = (columns == null || columns.isEmpty)
-        ? '*'
-        : columns.map((c) => '[$c]').join(', ');
-    final sql = 'SELECT $colsPart FROM [$table]';
+  /// [odbcLibName]: The name or path of the ODBC driver manager library
+  /// (e.g., 'odbc32.dll' on Windows).
+  OdbcConnector({String odbcLibName = 'odbc32.dll'})
+    : _api = _OdbcRawApi(odbcLibName: odbcLibName);
 
-    // 2. اجرای کوئری
-    final sqlPtr = sql.toNativeUtf16();
-    final execRet = _SQLExecDirectW(_stmt!, sqlPtr, -3);
-    calloc.free(sqlPtr);
-    if (execRet != 0 && execRet != 1) {
-      throw Exception('ExecDirect failed: code $execRet');
+  void _checkReturnCode(
+    int code,
+    String functionName, {
+    List<int> successCodes = const [sqlSuccess, sqlSuccessWithInfo],
+  }) {
+    if (!successCodes.contains(code)) {
+      throw Exception('❌ ODBC Error: $functionName failed with code $code.');
     }
+  }
 
-    // 3. تعداد ستون‌ها
-    final colCountPtr = calloc<Int16>();
-    final retCols = _SQLNumResultCols(_stmt!, colCountPtr);
-    if (retCols != 0) {
-      calloc.free(colCountPtr);
-      throw Exception('SQLNumResultCols failed: $retCols');
-    }
-    final colCount = colCountPtr.value;
-    calloc.free(colCountPtr);
-
-    // 4. متادیتای ستون‌ها
-    final meta = <_ColMeta>[];
-    for (var i = 1; i <= colCount; i++) {
-      final nameBuf = calloc<Uint16>(128).cast<Utf16>();
-      final nameLenPtr = calloc<Int16>();
-      final typePtr = calloc<Int16>();
-      final sizePtr = calloc<Int32>();
-      final decPtr = calloc<Int16>();
-      final nulPtr = calloc<Int16>();
-
-      final descRet = _SQLDescribeColW(
-        _stmt!,
-        i,
-        nameBuf,
-        128,
-        nameLenPtr,
-        typePtr,
-        sizePtr,
-        decPtr,
-        nulPtr,
+  /// Establishes a connection to an ODBC data source.
+  Future<String> connect(String connectionString) async {
+    // 1. Allocate Environment Handle
+    final envOut = calloc<SQLHANDLE>();
+    try {
+      _checkReturnCode(
+        _api.sqlAllocHandle(sqlHandleTypeEnv, nullptr, envOut),
+        'SQLAllocHandle (ENV)',
       );
-      if (descRet != 0) {
-        throw Exception('DescribeColW failed at col $i');
-      }
-
-      final name = nameBuf.toDartString(length: nameLenPtr.value);
-      meta.add(_ColMeta(name: name, sqlType: typePtr.value));
-      calloc.free(nameBuf);
-      calloc.free(nameLenPtr);
-      calloc.free(typePtr);
-      calloc.free(sizePtr);
-      calloc.free(decPtr);
-      calloc.free(nulPtr);
+      _envHandle = envOut.value;
+    } finally {
+      calloc.free(envOut);
     }
-    // خواندن رشته (WCHAR)
-    String readString(int col) {
-      final buf = calloc<Uint16>(512);
-      final lenPtr = calloc<Int64>();
-      final ret = _SQLGetData(
-        _stmt!,
-        col,
-        SQL_C_WCHAR,
-        buf.cast<Void>(),
-        sizeOf<Uint16>() * 512,
-        lenPtr,
+
+    // 2. Set ODBC Version
+    try {
+      _checkReturnCode(
+        _api.sqlSetEnvAttr(
+          _envHandle!,
+          sqlAttrOdbcVersion,
+          Pointer.fromAddress(sqlOdbcVersion3),
+          // Value passed directly as a pointer-sized integer
+          0, // For integer attributes like SQL_ATTR_ODBC_VERSION with SQL_OV_ODBC3, this is SQL_IS_INTEGER or 0
+        ),
+        'SQLSetEnvAttr (ODBC_VERSION)',
       );
-      if (ret != 0) {
-        calloc.free(buf);
-        calloc.free(lenPtr);
-        throw Exception('SQLGetData failed at col=$col, code $ret');
-      }
-      final s = buf.cast<Utf16>().toDartString().trim();
-      calloc.free(buf);
-      calloc.free(lenPtr);
-      return s;
+    } catch (e) {
+      disconnect(); // Clean up if this step fails
+      rethrow;
     }
 
-    // خواندن double باینری
-    double readDouble(int col) {
-      final buf = calloc<Double>();
-      final lenPtr = calloc<Int64>();
-      final ret = _SQLGetData(
-        _stmt!,
-        col,
-        SQL_C_DOUBLE,
-        buf.cast<Void>(),
-        sizeOf<Double>(),
-        lenPtr,
+    // 3. Allocate Connection Handle
+    final dbcOut = calloc<SQLHANDLE>();
+    try {
+      _checkReturnCode(
+        _api.sqlAllocHandle(sqlHandleTypeDbc, _envHandle!, dbcOut),
+        'SQLAllocHandle (DBC)',
       );
-      if (ret != 0) {
-        calloc.free(buf);
-        calloc.free(lenPtr);
-        throw Exception('SQLGetData(double) failed at col=$col, code $ret');
-      }
-      final v = buf.value;
-      calloc.free(buf);
-      calloc.free(lenPtr);
-      return v;
+      _dbcHandle = dbcOut.value;
+    } catch (e) {
+      disconnect();
+      rethrow;
+    } finally {
+      calloc.free(dbcOut);
     }
 
-    // خواندن int32 باینری
-    int readInt(int col) {
-      final buf = calloc<Int32>();
-      final lenPtr = calloc<Int64>();
-      final ret = _SQLGetData(
-        _stmt!,
-        col,
-        SQL_C_SLONG,
-        buf.cast<Void>(),
-        sizeOf<Int32>(),
-        lenPtr,
+    // 4. Connect to the Driver
+    final connPtr = connectionString.toNativeUtf16();
+    final outBuf =
+        calloc<Uint16>(
+          512,
+        ).cast<Utf16>(); // Buffer for output connection string
+    final outLenPtr = calloc<Int16>(); // Pointer for length of output string
+
+    try {
+      final ret = _api.sqlDriverConnectW(
+        _dbcHandle!,
+        0,
+        // Window handle (hWnd = 0 for no dialog)
+        connPtr,
+        sqlNts,
+        // Input connection string is null-terminated
+        outBuf,
+        512,
+        // Max length of output buffer in characters
+        outLenPtr,
+        sqlDriverComplete, // Driver completion option
       );
-      if (ret != 0) {
-        calloc.free(buf);
-        calloc.free(lenPtr);
-        throw Exception('SQLGetData(int) failed at col=$col, code $ret');
-      }
-      final v = buf.value;
-      calloc.free(buf);
-      calloc.free(lenPtr);
-      return v;
+      _checkReturnCode(ret, 'SQLDriverConnectW');
+      // Optionally, you can read the completed connection string:
+      // String completedConnectionString = outBuf.toDartString(length: outLenPtr.value);
+      // print("Completed connection string: $completedConnectionString");
+    } catch (e) {
+      disconnect();
+      rethrow;
+    } finally {
+      calloc.free(connPtr);
+      calloc.free(outBuf);
+      calloc.free(outLenPtr);
     }
 
-    // خواندن BIT
-    bool readBool(int col) {
-      final buf = calloc<Uint8>();
-      final lenPtr = calloc<Int64>();
-      final ret = _SQLGetData(
-        _stmt!,
-        col,
-        SQL_C_BIT,
-        buf.cast<Void>(),
-        sizeOf<Uint8>(),
-        lenPtr,
+    // 5. Allocate Statement Handle
+    final stmtOut = calloc<SQLHANDLE>();
+    try {
+      _checkReturnCode(
+        _api.sqlAllocHandle(sqlHandleTypeStmt, _dbcHandle!, stmtOut),
+        'SQLAllocHandle (STMT)',
       );
-      if (ret != 0) {
-        calloc.free(buf);
-        calloc.free(lenPtr);
-        throw Exception('SQLGetData(bool) failed at col=$col, code $ret');
-      }
-      final v = buf.value;
-      calloc.free(buf);
-      calloc.free(lenPtr);
-      return v != 0;
+      _stmtHandle = stmtOut.value;
+    } catch (e) {
+      disconnect();
+      rethrow;
+    } finally {
+      calloc.free(stmtOut);
     }
 
-    // 5. خواندن ردیف‌ها
-    final rows = <Map<String, dynamic>>[];
-    while (_SQLFetch(_stmt!) == 0) {
-      final row = <String, dynamic>{};
-      for (var i = 0; i < meta.length; i++) {
-        final colIndex = i + 1;
-        final m = meta[i];
-        dynamic val;
-        switch (m.sqlType) {
-          case SQL_C_SLONG:
-            val = readInt(colIndex);
-            break;
-          case SQL_C_DOUBLE:
-            val = readDouble(colIndex);
-            break;
-          case SQL_C_BIT:
-            val = readBool(colIndex);
-            break;
-          default:
-            val = readString(colIndex);
+    return 'Successfully connected to ODBC data source.';
+  }
+
+  /// Disconnects from the data source and frees all allocated handles.
+  /// Disconnects from the data source and frees all allocated handles.
+  ///
+  /// Returns `true` if all deallocation operations for existing handles
+  /// completed successfully, `false` otherwise.
+  bool disconnect() {
+    bool allOperationsSuccessful = true;
+    final bool inDebugMode = kDebugMode; // Check once
+
+    // 1. Free Statement Handle
+    if (_stmtHandle != null) {
+      int freeStmtRet = _api.sqlFreeStmt(_stmtHandle!, sqlFreeStmtClose);
+      if (freeStmtRet != sqlSuccess && freeStmtRet != sqlSuccessWithInfo) {
+        allOperationsSuccessful = false;
+        if (inDebugMode) {
+          if (kDebugMode) {
+            print(
+              'ODBC Warning: SQLFreeStmt (SQL_CLOSE) failed with code $freeStmtRet for STMT handle.',
+            );
+          }
         }
-        row[m.name] = val;
       }
-      rows.add(row);
+
+      int freeStmtHandleRet = _api.sqlFreeHandle(
+        sqlHandleTypeStmt,
+        _stmtHandle!,
+      );
+      if (freeStmtHandleRet != sqlSuccess &&
+          freeStmtHandleRet != sqlSuccessWithInfo) {
+        allOperationsSuccessful = false;
+        if (inDebugMode) {
+          if (kDebugMode) {
+            print(
+              'ODBC Warning: SQLFreeHandle for STMT handle failed with code $freeStmtHandleRet.',
+            );
+          }
+        }
+      }
+      _stmtHandle = null;
     }
 
-    return rows;
+    // 2. Disconnect and Free Connection Handle (DBC)
+    if (_dbcHandle != null) {
+      // Call SQLDisconnect first
+      int disconnectRet = _api.sqlDisconnect(_dbcHandle!);
+      if (disconnectRet != sqlSuccess && disconnectRet != sqlSuccessWithInfo) {
+        allOperationsSuccessful = false;
+        if (inDebugMode) {
+          if (kDebugMode) {
+            print(
+              'ODBC Warning: SQLDisconnect failed with code $disconnectRet.',
+            );
+          }
+        }
+        // Even if SQLDisconnect fails, we still attempt to free the handle
+        // as per general cleanup best practices, though it might also fail.
+      }
+
+      int freeDbcHandleRet = _api.sqlFreeHandle(sqlHandleTypeDbc, _dbcHandle!);
+      if (freeDbcHandleRet != sqlSuccess &&
+          freeDbcHandleRet != sqlSuccessWithInfo) {
+        allOperationsSuccessful = false;
+        if (inDebugMode) {
+          // This is the error you are currently seeing for DBC
+          if (kDebugMode) {
+            print(
+              'ODBC Warning: SQLFreeHandle for DBC handle failed with code $freeDbcHandleRet.',
+            );
+          }
+        }
+      }
+      _dbcHandle = null;
+    }
+
+    // 3. Free Environment Handle
+    if (_envHandle != null) {
+      int freeEnvHandleRet = _api.sqlFreeHandle(sqlHandleTypeEnv, _envHandle!);
+      if (freeEnvHandleRet != sqlSuccess &&
+          freeEnvHandleRet != sqlSuccessWithInfo) {
+        allOperationsSuccessful = false;
+        if (inDebugMode) {
+          // This is the error you are currently seeing for ENV
+          if (kDebugMode) {
+            print(
+              'ODBC Warning: SQLFreeHandle for ENV handle failed with code $freeEnvHandleRet.',
+            );
+          }
+        }
+      }
+      _envHandle = null;
+    }
+
+    return allOperationsSuccessful;
+  }
+
+  /// Executes a SELECT query and returns the results as a list of maps.
+  Future<List<Map<String, dynamic>>> executeQuery(String sqlQuery) async {
+    if (_stmtHandle == null) {
+      throw Exception(
+        'Cannot execute query: Statement handle is not allocated. Ensure connect() was called successfully.',
+      );
+    }
+
+    final sqlPtr = sqlQuery.toNativeUtf16();
+    try {
+      // 1. Execute the query
+      _checkReturnCode(
+        _api.sqlExecDirectW(_stmtHandle!, sqlPtr, sqlNts),
+        // sqlNts indicates null-terminated string
+        'SQLExecDirectW for query: "$sqlQuery"',
+      );
+
+      // 2. Get number of result columns
+      final colCountPtr = calloc<Int16>();
+      try {
+        _checkReturnCode(
+          _api.sqlNumResultCols(_stmtHandle!, colCountPtr),
+          'SQLNumResultCols',
+        );
+        final numCols = colCountPtr.value;
+
+        // If numCols is 0, it might be a non-SELECT statement or an empty result set metadata
+        if (numCols <= 0) {
+          // It's also possible for SQLExecDirectW to return SQL_NO_DATA for updates/deletes.
+          // For SELECTs, SQL_NO_DATA from SQLFetch indicates an empty result set.
+          // Here, numCols <= 0 means no columns were described by the query.
+          return [];
+        }
+
+        // 3. Get column metadata
+        final colMetadata =
+            <OdbcColumnMeta>[]; // Using the renamed public class
+        for (var i = 1; i <= numCols; i++) {
+          // ODBC columns are 1-based
+          final nameBuf =
+              calloc<Uint16>(256).cast<Utf16>(); // Buffer for column name
+          final nameLenPtr = calloc<Int16>();
+          final typePtr = calloc<Int16>(); // SQL_XXX type
+          final sizePtr = calloc<Int32>(); // Column size
+          final decDigitsPtr = calloc<Int16>(); // Decimal digits
+          final nullablePtr = calloc<Int16>(); // Nullability
+
+          try {
+            _checkReturnCode(
+              _api.sqlDescribeColW(
+                _stmtHandle!,
+                i,
+                // Column number (1-based)
+                nameBuf,
+                256,
+                // Buffer length for name in characters
+                nameLenPtr,
+                typePtr,
+                sizePtr,
+                decDigitsPtr,
+                nullablePtr,
+              ),
+              'SQLDescribeColW for column $i',
+            );
+
+            final colName = nameBuf.toDartString(length: nameLenPtr.value);
+            colMetadata.add(
+              OdbcColumnMeta(name: colName, sqlDataType: typePtr.value),
+            );
+          } finally {
+            calloc.free(nameBuf);
+            calloc.free(nameLenPtr);
+            calloc.free(typePtr);
+            calloc.free(sizePtr);
+            calloc.free(decDigitsPtr);
+            calloc.free(nullablePtr);
+          }
+        }
+
+        // 4. Fetch rows and data
+        final results = <Map<String, dynamic>>[];
+        int fetchRet;
+        while (true) {
+          fetchRet = _api.sqlFetch(_stmtHandle!);
+          if (fetchRet == sqlNoData) break; // No more rows
+          _checkReturnCode(fetchRet, 'SQLFetch'); // Check for other errors
+
+          final row = <String, dynamic>{};
+          for (var i = 0; i < numCols; i++) {
+            final meta = colMetadata[i];
+            final colIndex = i + 1; // ODBC columns are 1-based
+            row[meta.name] = _getDataForColumn(colIndex, meta.sqlDataType);
+          }
+          results.add(row);
+        }
+        return results;
+      } finally {
+        calloc.free(colCountPtr);
+      }
+    } finally {
+      calloc.free(sqlPtr);
+      // Close the cursor to allow the statement handle to be reused or freed properly.
+      final closeRet = _api.sqlFreeStmt(_stmtHandle!, sqlFreeStmtClose);
+      if (closeRet != sqlSuccess && closeRet != sqlSuccessWithInfo) {
+        // This is usually not critical for the query result itself but indicates a cleanup issue.
+        if (kDebugMode) {
+          // Only print in debug mode
+          print(
+            'Warning: SQLFreeStmt(sqlFreeStmtClose) failed after query with code $closeRet.',
+          );
+        }
+      }
+    }
+  }
+
+  /// Internal helper to get data for a specific column based on its SQL type.
+  dynamic _getDataForColumn(int columnIndex, int columnSqlDataType) {
+    Pointer<Int64> strLenOrIndPtr = calloc<Int64>(); // For length or indicator
+    try {
+      // Helper closure to reduce boilerplate for SQLGetData calls
+      dynamic readData(
+        int cDataType, // SQL_C_XXX type
+        int bufferSizeInBytes,
+        Pointer<Void> buffer,
+        // Converter function: takes buffer and actual length/indicator
+        Function(Pointer<Void> buf, int lengthOrIndicator) converter,
+      ) {
+        final ret = _api.sqlGetData(
+          _stmtHandle!,
+          columnIndex,
+          cDataType,
+          buffer,
+          bufferSizeInBytes,
+          strLenOrIndPtr,
+        );
+        // SQL_NO_DATA is a valid success code here if all data was already fetched or for zero-length data.
+        _checkReturnCode(
+          ret,
+          'SQLGetData for column $columnIndex (C Type: $cDataType)',
+          successCodes: [sqlSuccess, sqlSuccessWithInfo, sqlNoData],
+        );
+
+        if (strLenOrIndPtr.value == sqlNullData) return null; // SQL_NULL_DATA
+
+        // If SQLGetData returns SQL_NO_DATA, it means no more data for *this specific call*.
+        // For fixed-size types, this shouldn't usually happen if strLenOrIndPtr isn't SQL_NULL_DATA.
+        // For variable types, strLenOrIndPtr will contain the total length.
+        // If strLenOrIndPtr.value is 0, it's an empty string/value.
+        if (ret == sqlNoData && strLenOrIndPtr.value == 0) {
+          return converter(buffer, 0); // e.g. empty string
+        }
+
+        return converter(buffer, strLenOrIndPtr.value);
+      }
+
+      switch (columnSqlDataType) {
+        case sqlDataTypeChar:
+        case sqlDataTypeVarchar:
+        case sqlDataTypeLongvarchar:
+        case sqlDataTypeWchar:
+        case sqlDataTypeWvarchar:
+        case sqlDataTypeWlongvarchar:
+        // Dates/Times/Timestamps are often best fetched as strings for simplicity
+        // unless you need to parse their native struct representations.
+        case sqlDataTypeDate:
+        case sqlDataTypeTime:
+        case sqlDataTypeTimestamp:
+          final bufferCharLength =
+              1024; // Max characters to fetch for a string column
+          final bufferByteLength = sizeOf<Uint16>() * bufferCharLength;
+          final buffer = calloc<Uint16>(
+            bufferCharLength,
+          ); // Using Utf16 for WCHAR
+          try {
+            return readData(
+              sqlcDataTypeWchar, // Target C type
+              bufferByteLength,
+              buffer.cast<Void>(),
+              (buf, lenInBytes) {
+                if (lenInBytes < 0) {
+                  return null; // Should be caught by sqlNullData
+                }
+                // lenInBytes from SQLGetData for SQL_C_WCHAR is in bytes.
+                return buf
+                    .cast<Utf16>()
+                    .toDartString(length: lenInBytes ~/ sizeOf<Uint16>())
+                    .trim();
+              },
+            );
+          } finally {
+            calloc.free(buffer);
+          }
+
+        case sqlDataTypeBit:
+          final buffer = calloc<Uint8>();
+          try {
+            return readData(
+              sqlcDataTypeBit,
+              sizeOf<Uint8>(),
+              buffer.cast<Void>(),
+              (buf, len) =>
+                  buf.cast<Uint8>().value != 0, // Convert 0/1 to false/true
+            );
+          } finally {
+            calloc.free(buffer);
+          }
+
+        case sqlDataTypeSmallint:
+        case sqlDataTypeInteger:
+          final buffer = calloc<Int32>(); // SQL_C_SLONG corresponds to Int32
+          try {
+            return readData(
+              sqlcDataTypeSlong,
+              sizeOf<Int32>(),
+              buffer.cast<Void>(),
+              (buf, len) => buf.cast<Int32>().value,
+            );
+          } finally {
+            calloc.free(buffer);
+          }
+
+        case sqlDataTypeReal: // Typically a 32-bit float
+        case sqlDataTypeFloat: // Can be 32-bit or 64-bit depending on driver/DB
+        case sqlDataTypeDouble: // Typically a 64-bit float
+        // NUMERIC and DECIMAL might lose precision if fetched as double.
+        // Fetching as string (SQL_C_WCHAR) and then parsing with `decimal` package is safer for exact values.
+        case sqlDataTypeNumeric:
+        case sqlDataTypeDecimal:
+          final buffer = calloc<Double>();
+          try {
+            return readData(
+              sqlcDataTypeDouble,
+              sizeOf<Double>(),
+              buffer.cast<Void>(),
+              (buf, len) => buf.cast<Double>().value,
+            );
+          } finally {
+            calloc.free(buffer);
+          }
+
+        // To handle native DATE, TIME, TIMESTAMP structs:
+        // case sqlDataTypeDate:
+        //   final buffer = calloc<TagDateStruct>(); // Assuming you define TagDateStruct FFI mapping
+        //   try {
+        //     return readData(sqlcDataTypeDate, sizeOf<TagDateStruct>(), buffer.cast<Void>(),
+        //       (buf, len) {
+        //         final dateStruct = buf.cast<TagDateStruct>().ref;
+        //         return DateTime(dateStruct.year, dateStruct.month, dateStruct.day);
+        //       });
+        //   } finally { calloc.free(buffer); }
+        // Similar for TIME and TIMESTAMP using their respective C structs and SQL_C_TIME/SQL_C_TIMESTAMP.
+
+        default:
+          // Fallback for unknown or unhandled SQL types: attempt to read as string.
+          if (kDebugMode) {
+            print(
+              'Warning: Unhandled SQL data type $columnSqlDataType for column $columnIndex. Attempting to read as string.',
+            );
+          }
+          final bufferCharLength = 256; // Smaller buffer for unknown types
+          final bufferByteLength = sizeOf<Uint16>() * bufferCharLength;
+          final buffer = calloc<Uint16>(bufferCharLength);
+          try {
+            return readData(
+              sqlcDataTypeWchar,
+              bufferByteLength,
+              buffer.cast<Void>(),
+              (buf, lenInBytes) {
+                if (lenInBytes < 0) return null;
+                return buf
+                    .cast<Utf16>()
+                    .toDartString(length: lenInBytes ~/ sizeOf<Uint16>())
+                    .trim();
+              },
+            );
+          } finally {
+            calloc.free(buffer);
+          }
+      }
+    } finally {
+      calloc.free(strLenOrIndPtr);
+    }
   }
 }
-
-class _ColMeta {
-  final String name;
-  final int sqlType;
-  _ColMeta({required this.name, required this.sqlType});
-}
-

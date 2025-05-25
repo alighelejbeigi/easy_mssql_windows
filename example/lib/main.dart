@@ -26,16 +26,26 @@ class MyHomePage extends StatefulWidget {
   final test = OdbcConnector();
   String? resultConnection;
   String? resultValue;
+  String? resultDic;
+  int value = 0;
 
   Future<void> test2() async {
     resultConnection = await test.connect(
-      'DRIVER={ODBC Driver 17 for SQL Server};SERVER=192.168.2.110,1433;DATABASE=Holoo1;UID=sa;PWD=@Aa123456;',
+      'DRIVER={ODBC Driver 17 for SQL Server};SERVER=192.168.2.110,1433;DATABASE=Holoo5;UID=sa;PWD=@Aa123456;',
     );
   }
 
   Future<void> test3() async {
-   final result = await test.query('ARTICLE');
-   resultValue = result.first['A_Name'];
+    final result = await test.query(table: 'ARTICLE', columns: ['A_Name']);
+    resultValue = result[value]['A_Name'];
+    value++;
+  }
+
+  Future<void> test4() async {
+    final result = test.disconnect();
+    if (result) {
+      resultDic = 'disconnected';
+    }
   }
 
   final String title;
@@ -63,15 +73,25 @@ class _MyHomePageState extends State<MyHomePage> {
                   }),
               child: Text('connect'),
             ),
-            widget.resultConnection != null ? Text(widget.resultConnection!) : SizedBox(),
+            widget.resultConnection != null
+                ? Text(widget.resultConnection!)
+                : SizedBox(),
             InkWell(
               onTap:
                   () => setState(() {
-                widget.test3();
-              }),
+                    widget.test3();
+                  }),
               child: Text('get data'),
             ),
             widget.resultValue != null ? Text(widget.resultValue!) : SizedBox(),
+            InkWell(
+              onTap:
+                  () => setState(() {
+                    widget.test4();
+                  }),
+              child: Text('diconeccted'),
+            ),
+            widget.resultDic != null ? Text(widget.resultDic!) : SizedBox(),
           ],
         ),
       ),
