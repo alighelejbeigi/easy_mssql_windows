@@ -218,8 +218,6 @@ class OdbcConnector {
   /// It attempts all cleanup steps even if one fails.
   bool disconnect() {
     bool allOperationsSuccessful = true;
-    final bool inDebugMode =
-        kDebugMode; // Cache kDebugMode check for minor efficiency.
 
     // --- 1. Free Statement Handle ---
     if (_stmtHandle != null) {
