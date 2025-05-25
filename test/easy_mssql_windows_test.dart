@@ -170,11 +170,4 @@ void main() {
       connector!.disconnect();
     }
   });
-
-  // Add more integration tests:
-  // - Test different data types (integers, decimals, strings, dates, booleans/bits).
-  // - Test inserting, updating, deleting data (if your package supports these beyond SELECTs).
-  // - Test handling of NULL values from the database.
-  // - Test connection with invalid credentials or wrong server address.
-  // - Test resilience to disconnecting and reconnecting.
 }
