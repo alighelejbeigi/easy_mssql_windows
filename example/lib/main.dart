@@ -75,7 +75,7 @@ class _MyHomePageState extends State<MyHomePage> {
   // Also, ensure the 'DRIVER' matches an ODBC driver installed on your Windows machine.
   // Common drivers: {ODBC Driver 17 for SQL Server}, {ODBC Driver 18 for SQL Server}, {SQL Server Native Client 11.0}
   final String _connectionString =
-      'DRIVER={ODBC Driver 17 for SQL Server};SERVER=192.168.2.110,1433;DATABASE=Holoo5;UID=sa;PWD=@Aa123456;';
+      'DRIVER={ODBC Driver 17 for SQL Server};SERVER=192.168.2.110,1433;DATABASE=DatabaseName;UID=UserName;PWD=PassWord;';
 
   // Example for Windows Authentication (Trusted Connection) if your server is configured for it:
   // final String _connectionString =

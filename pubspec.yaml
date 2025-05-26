@@ -1,6 +1,6 @@
 name: easy_mssql_windows
 description: "A Easy Flutter Package for connected to MS SQL Server."
-version: 0.0.1
+version: 0.0.2
 homepage: https://github.com/alighelejbeigi/easy_mssql_windows
 repository: https://github.com/alighelejbeigi/easy_mssql_windows
 
